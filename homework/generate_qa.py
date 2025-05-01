@@ -31,6 +31,14 @@ ORIGINAL_WIDTH = 600
 ORIGINAL_HEIGHT = 400
 
 
+def _clip_bbox(box, w, h):
+    x1, y1, x2, y2 = box
+    return max(0, x1), max(0, y1), min(w, x2), min(h, y2)
+
+def _center(box):
+    x1, y1, x2, y2 = box
+    return (x1 + x2) / 2, (y1 + y2) / 2
+
 def extract_frame_info(image_path: str) -> tuple[int, int]:
     """
     Extract frame ID and view index from image filename.
