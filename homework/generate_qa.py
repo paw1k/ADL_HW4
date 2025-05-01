@@ -372,8 +372,51 @@ You probably need to add additional commands to Fire below.
 """
 
 
+# -------------------------------------------------
+#  ADD THIS NEAR THE BOTTOM OF generate_qa.py
+# -------------------------------------------------
+def generate_dataset(
+    data_dir: str,
+    output_dir: str,
+    split: str = "train",
+    img_width: int = 150,
+    img_height: int = 100,
+):
+    """
+    Create a single  *_qa_pairs.json  file for an entire split.
+
+    Example
+    -------
+    python -m homework.generate_qa generate \
+           --data_dir ./data --output_dir ./data --split train
+    """
+    import glob, os, json
+    from tqdm import tqdm
+
+    info_files = sorted(glob.glob(os.path.join(data_dir, split, "*_info.json")))
+    all_pairs  = []
+
+    for info in tqdm(info_files, desc=f"processing {split} split"):
+        # every info file has 10 camera views
+        for view in range(10):
+            all_pairs.extend(
+                generate_qa_pairs(info, view, img_width=img_width, img_height=img_height)
+            )
+
+    outfile = os.path.join(output_dir, f"{split}_qa_pairs.json")
+    with open(outfile, "w") as f:
+        json.dump(all_pairs, f, indent=2)
+
+    print(f"wrote {len(all_pairs):,} QA pairs → {outfile}")
+
+
 def main():
-    fire.Fire({"check": check_qa_pairs})
+    fire.Fire(
+        {
+            "check":    check_qa_pairs,
+            "generate": generate_dataset,   # ← NEW
+        }
+    )
 
 
 if __name__ == "__main__":
