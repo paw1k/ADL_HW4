@@ -39,6 +39,28 @@ def _center(box):
     x1, y1, x2, y2 = box
     return (x1 + x2) / 2, (y1 + y2) / 2
 
+
+
+def _find_image_for_view(info_path: Path, base: str, view_index: int) -> Path:
+    """
+    Locate the rendered frame that corresponds to   base + f"_{view:02d}_im.(jpg|png)".
+    Returns a pathlib.Path or raises FileNotFoundError if nothing matches.
+    """
+    patterns = [
+        f"{base}_{view_index:02d}_im.jpg",
+        f"{base}_{view_index:02d}_im.png",
+    ]
+    for pat in patterns:
+        hits = list(info_path.parent.glob(pat))
+        if hits:
+            return hits[0]
+    raise FileNotFoundError(
+        f"No frame image found for view {view_index} next to {info_path.name} "
+        f"(looked for *.jpg and *.png)."
+    )
+
+
+
 def extract_frame_info(image_path: str) -> tuple[int, int]:
     """
     Extract frame ID and view index from image filename.
@@ -340,7 +362,13 @@ def check_qa_pairs(info_file: str, view_index: int):
     # Find corresponding image file
     info_path = Path(info_file)
     base_name = info_path.stem.replace("_info", "")
-    image_file = list(info_path.parent.glob(f"{base_name}_{view_index:02d}_im.jpg"))[0]
+
+    try:
+        image_file = _find_image_for_view(info_path, base_name, view_index)
+    except FileNotFoundError as e:
+        print(e)
+        print("Skipping visualisation; will still print generated QA pairs.\n")
+        image_file = None        # allow the rest of the function to continue
 
     # Visualize detections
     annotated_image = draw_detections(str(image_file), info_file)
