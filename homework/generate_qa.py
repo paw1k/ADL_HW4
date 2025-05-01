@@ -363,12 +363,16 @@ def check_qa_pairs(info_file: str, view_index: int):
     info_path = Path(info_file)
     base_name = info_path.stem.replace("_info", "")
 
-    try:
-        image_file = _find_image_for_view(info_path, base_name, view_index)
-    except FileNotFoundError as e:
-        print(e)
-        print("Skipping visualisation; will still print generated QA pairs.\n")
-        image_file = None        # allow the rest of the function to continue
+    if image_file is not None:
+        annotated_image = draw_detections(str(image_file), info_file)
+
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.imshow(annotated_image)
+        ax.set_title(f"{info_path.name}  –  view {view_index}")
+        ax.axis("off")
+        plt.show()
+    else:
+        print("(Skipping draw_detections – frame file not found.)")
 
     # Visualize detections
     annotated_image = draw_detections(str(image_file), info_file)
