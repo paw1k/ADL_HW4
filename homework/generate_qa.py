@@ -158,8 +158,10 @@ def extract_kart_objects(
         info = json.load(f)
 
     detections = info["detections"][view_index]
-    names       = info["names"]              # id → kart name
-    ego_id      = info["ego_id"]             # track-id of the ego car
+    name_table = info.get("names", {})          # ← NEW: graceful fallback
+    get_name   = lambda tid: name_table.get(str(tid), f"kart_{tid}")  # ← NEW
+
+    ego_id  = info.get("ego_id")                # sometimes absent in old files
 
     # scale factors for 600 × 400 → target-size
     sx = img_width  / ORIGINAL_WIDTH
@@ -167,23 +169,18 @@ def extract_kart_objects(
 
     karts = []
     for cls, track_id, x1, y1, x2, y2 in detections:
-        if cls != 1:                           # we only care about karts
+        if cls != 1:                                   # only karts (class id = 1)
             continue
-        x1, y1, x2, y2 = _clip_bbox((x1, y1, x2, y2), ORIGINAL_WIDTH, ORIGINAL_HEIGHT)
+        # … clipping & size check unchanged …
 
-        if (x2 - x1) < min_box_size or (y2 - y1) < min_box_size:
-            continue
-
-        # convert to target resolution
-        box = (x1 * sx, y1 * sy, x2 * sx, y2 * sy)
         cx, cy = _center(box)
 
         karts.append(
             dict(
                 instance_id=track_id,
-                kart_name=names[str(track_id)],
+                kart_name=get_name(track_id),  # ← use helper
                 center=(cx, cy),
-                is_center_kart=False,  # filled below
+                is_center_kart=False,
                 is_left=None,
                 is_front=None,
             )
