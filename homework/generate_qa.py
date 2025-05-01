@@ -181,6 +181,7 @@ def extract_kart_objects(
             continue
         # … clipping & size check unchanged …
 
+        box = (x1 * sx, y1 * sy, x2 * sx, y2 * sy)
         cx, cy = _center(box)
 
         karts.append(
