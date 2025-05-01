@@ -351,49 +351,44 @@ def generate_qa_pairs(info_path: str, view_index: int, img_width: int = 150, img
 
 
 
-def check_qa_pairs(info_file: str, view_index: int):
-    """
-    Check QA pairs for a specific info file and view index.
-
-    Args:
-        info_file: Path to the info.json file
-        view_index: Index of the view to analyze
-    """
-    # Find corresponding image file
+def check_qa_pairs(info_file: str, view_index: int = 0):
     info_path = Path(info_file)
     base_name = info_path.stem.replace("_info", "")
 
-    if image_file is not None:
-        annotated_image = draw_detections(str(image_file), info_file)
+    image_file: Path | None = None
+    try:
+        image_file = _find_image_for_view(info_path, base_name, view_index)
+    except FileNotFoundError as e:
+        print(e)
+        print("Skipping visualisation; will still print generated QA pairs.\n")
 
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.imshow(annotated_image)
-        ax.set_title(f"{info_path.name}  –  view {view_index}")
-        ax.axis("off")
-        plt.show()
-    else:
-        print("(Skipping draw_detections – frame file not found.)")
-
-    # Visualize detections
-    annotated_image = draw_detections(str(image_file), info_file)
-
-    # Display the image
-    plt.figure(figsize=(12, 8))
-    plt.imshow(annotated_image)
-    plt.axis("off")
-    plt.title(f"Frame {extract_frame_info(str(image_file))[0]}, View {view_index}")
-    plt.show()
-
-    # Generate QA pairs
     qa_pairs = generate_qa_pairs(info_file, view_index)
+    if not qa_pairs:
+        print("No karts detected – no QA pairs generated.")
+        return
 
-    # Print QA pairs
-    print("\nQuestion-Answer Pairs:")
-    print("-" * 50)
+    print("\nQuestion–Answer pairs")
+    print("-" * 60)
     for qa in qa_pairs:
         print(f"Q: {qa['question']}")
         print(f"A: {qa['answer']}")
-        print("-" * 50)
+        print("-" * 60)
+
+    if image_file is not None:
+        annotated = draw_detections(str(image_file), info_file)
+
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.imshow(annotated)
+        ax.axis("off")
+
+        frame_id, _ = extract_frame_info(str(image_file))
+        ax.set_title(
+            f"{info_path.name}  |  frame {frame_id}  |  view {view_index}",
+            fontsize=14,
+        )
+        plt.show()
+    else:
+        print("(No frame image found – visualisation skipped.)")
 
 
 """
