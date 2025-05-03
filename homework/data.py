@@ -1,43 +1,13 @@
-"""
-data.py – utilities for loading QA‑pair datasets and benchmarking a VLM
-
-Key changes
------------
-✓   Always coerce `data_dir` to `pathlib.Path`, so `.glob()` never fails.
-✓   Accept both directory and flat‑file layouts:
-        data/train/*_qa_pairs.json
-        data/train_qa_pairs.json
-✓   Clear error message if nothing is found.
-✓   No other public API signatures changed – finetune.py, base_vlm.py, etc.
-"""
-
-from __future__ import annotations
-
 import json
 import os
-import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List
+from typing import Any
 
-import tqdm
-
-
-# ----------------------------------------------------------------------
-#  Dataset
-# ----------------------------------------------------------------------
 DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 class VQADataset:
-    """
-    Lightweight in‑memory loader for SuperTuxKart VQA JSONs.
-
-    Each sample returned by ``__getitem__`` is a dict with keys
-    ``image_path, question, answer`` – exactly what `finetune.py`
-    expects.
-    """
-
     def __init__(
         self,
         split: str,
@@ -51,7 +21,7 @@ class VQADataset:
         # ------------------------------------------------------------------
         # Gather *_qa_pairs.json files (nested layout)
         # ------------------------------------------------------------------
-        qa_files: List[Path] = list(self.data_dir.glob(f"{split}/*_qa_pairs.json"))
+        qa_files: list[Path] = list(self.data_dir.glob(f"{split}/*_qa_pairs.json"))
 
         # Fallback: flat layout  data/train_qa_pairs.json
         flat_file = self.data_dir / f"{split}_qa_pairs.json"
@@ -64,10 +34,7 @@ class VQADataset:
                 "(tried both nested and flat layouts)."
             )
 
-        # ------------------------------------------------------------------
-        # Load JSONs
-        # ------------------------------------------------------------------
-        self.qa_pairs: List[dict[str, Any]] = []
+        self.qa_pairs: list[dict[str, Any]] = []
         for file in qa_files:
             with file.open() as f:
                 self.qa_pairs.extend(json.load(f))
@@ -77,29 +44,33 @@ class VQADataset:
 
         print(f"Loaded {len(self.qa_pairs):,} QA pairs for split '{split}'")
 
-    # ---------------- Dataset protocol ----------------
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.qa_pairs)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        item = self.qa_pairs[idx]
-        image_path = os.path.join(self.data_dir, item["image_file"])
+        """
+        Get a QA pair by index.
+
+        Args:
+            idx: Index of the QA pair
+
+        Returns:
+            Dictionary containing the QA pair and image path
+        """
+        qa_pair = self.qa_pairs[idx]
+
+        # Construct the full path to the image
+        image_path = os.path.join(self.data_dir, qa_pair["image_file"])
+
         return {
             "image_path": image_path,
-            "question": item["question"],
-            "answer": item["answer"],
+            "question": qa_pair["question"],
+            "answer": qa_pair["answer"],
         }
 
 
-# ----------------------------------------------------------------------
-#  Benchmarking helpers
-# ----------------------------------------------------------------------
 @dataclass
 class VQABenchmarkResult:
-    """
-    Structured result returned by `benchmark`.
-    """
-
     @dataclass
     class Sample:
         image_path: str
@@ -109,75 +80,117 @@ class VQABenchmarkResult:
         is_correct: bool
 
     accuracy: float
-    samples: List[Sample]
+    samples: list[Sample]
 
-    # ---------------- Construction helper ----------------
     @classmethod
     def from_answers(
-        cls,
-        answers: List[str],
-        gt_dataset: List[dict[str, Any]],
-        max_samples: int | None = None,
+        cls, answers: list[str], gt_dataset: list[dict[str, Any]], max_samples: int = None
     ) -> "VQABenchmarkResult":
-        n = max_samples or min(len(answers), len(gt_dataset))
-        correct = 0
-        samples: List[VQABenchmarkResult.Sample] = []
+        """
+        Create a benchmark result from model answers.
 
-        for ans, gt in zip(answers[:n], gt_dataset[:n]):
-            answer_len = len(gt["answer"].strip())
-            is_correct = ans.strip().lower()[:answer_len] == gt["answer"].strip().lower()[:answer_len]
+        Args:
+            answers: List of model answers
+            dataset: Dataset used for evaluation
+
+        Returns:
+            Benchmark result
+        """
+        samples = []
+        correct_count = 0
+
+        if max_samples is None:
+            max_samples = min(len(answers), len(gt_dataset))
+        else:
+            max_samples = len(gt_dataset)
+
+        for i in range(max_samples):
+            item = gt_dataset[i]
+            answer = answers[i]
+
+            # For string answers, we use exact matching
+            answer_len = len(item["answer"].strip())
+            is_correct = answer.strip().lower()[:answer_len] == item["answer"].strip().lower()[:answer_len]
             samples.append(
                 cls.Sample(
-                    image_path=gt["image_path"],
-                    question=gt["question"],
-                    model_answer=ans,
-                    correct_answer=gt["answer"],
+                    image_path=item["image_path"],
+                    question=item["question"],
+                    model_answer=answer,
+                    correct_answer=item["answer"],
                     is_correct=is_correct,
                 )
             )
-            correct += int(is_correct)
 
-        acc = correct / n if n else 0.0
-        return cls(accuracy=acc, samples=samples)
+            if is_correct:
+                correct_count += 1
+
+        print(correct_count)
+        print(len(samples))
+
+        return cls(accuracy=correct_count / len(samples) if samples else 0, samples=samples)
 
 
-# ----------------------------------------------------------------------
-#  Public benchmark function
-# ----------------------------------------------------------------------
-def benchmark(model, dataset: VQADataset, max_samples: int | None = None) -> VQABenchmarkResult:
+def benchmark(model, dataset: VQADataset, max_samples: int = None) -> VQABenchmarkResult:
     """
-    Run `model.answer` on a random subset of *dataset* and compute accuracy.
+    Benchmark a VLM model on a dataset.
 
-    Parameters
-    ----------
-    model        : any object implementing `.answer(image_paths, questions)`
-    dataset      : VQADataset
-    max_samples  : int | None, optional
-        If given, sample up to this many items (default: full dataset).
+    Args:
+        model: VLM model to evaluate
+        dataset: Dataset to evaluate on
+        max_samples: Maximum number of samples to evaluate
 
-    Returns
-    -------
-    VQABenchmarkResult
+    Returns:
+        Benchmark result
     """
-    if len(dataset) == 0:
-        raise ValueError("Empty dataset – nothing to benchmark.")
 
-    k = min(max_samples or len(dataset), len(dataset))
-    indices = random.sample(range(len(dataset)), k)
+    if len(dataset) == 0 or max_samples == 0:
+        raise ValueError("Dataset or model is empty")
 
-    questions = [dataset[i]["question"] for i in indices]
-    image_paths = [dataset[i]["image_path"] for i in indices]
+    # Limit the number of samples if specified
+    if max_samples is not None:
+        dataset_size = min(len(dataset), max_samples)
+    else:
+        dataset_size = len(dataset)
 
-    print(f"Benchmarking on {k} samples …")
-    answers = model.answer(image_paths, questions)
+    import random
 
-    gt_subset = [dataset[i] for i in indices]
-    return VQABenchmarkResult.from_answers(answers, gt_subset, k)
+    sample_indices = random.sample(range(len(dataset)), dataset_size)
+
+    # Extract questions and image paths
+    questions = [dataset[i]["question"] for i in sample_indices]
+    image_paths = [dataset[i]["image_path"] for i in sample_indices]
+    answers = [dataset[i]["answer"] for i in sample_indices]
+    # Get model answers
+    responses = []
+    gt_dataset = []
+    mini_batch_size = 32
+    import tqdm
+
+    for i in tqdm.tqdm(range(0, dataset_size, mini_batch_size)):  # Process in batches
+        batch_size = min(mini_batch_size, dataset_size - i)
+        batch_questions = questions[i : i + batch_size]
+        batch_image_paths = image_paths[i : i + batch_size]
+        batch_indices = sample_indices[i : i + batch_size]
+
+        batch_responses = model.answer(batch_image_paths, batch_questions)
+        responses.extend(batch_responses)
+        gt_dataset.extend([dataset[i] for i in batch_indices])
+        print(f"\tProcessed {i + batch_size} samples")
+        print(f"\tQuestions: {batch_questions}")
+        print(f"\tResponses: {batch_responses}")
+        print(f"\tAnswers: {answers[i : i + batch_size]}")
+
+    return VQABenchmarkResult.from_answers(responses, gt_dataset, max_samples)
 
 
-# ----------------------------------------------------------------------
-#  Quick manual test (optional)
-# ----------------------------------------------------------------------
 if __name__ == "__main__":
-    ds = VQADataset("train", max_samples=3)
-    print(ds[0])
+    # Test the dataset
+    dataset = VQADataset("train")
+    print(f"Dataset size: {len(dataset)}")
+
+    # Print a sample
+    sample = dataset[0]
+    print("\nSample:")
+    print(f"Image: {sample['image_path']}")
+    print(f"Question: {sample['question']}")
+    print(f"Answer: {sample['answer']}")

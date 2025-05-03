@@ -40,6 +40,21 @@ def _center(box):
     return (x1 + x2) / 2, (y1 + y2) / 2
 
 
+# -------------------------------------------------
+def _relative_image_path(info_path: Path, view_index: int) -> str | None:
+    """
+    Return the frame filename *relative to the data dir* so
+    VQADataset can join it with its own data_dir later on.
+    If the frame isn't found, return None.
+    """
+    base_name = info_path.stem.replace("_info", "")
+    try:
+        img_path = _find_image_for_view(info_path, base_name, view_index)
+        # example:  data/train/00000_00_im.jpg  ->  train/00000_00_im.jpg
+        return str(img_path.relative_to(info_path.parents[1]))
+    except FileNotFoundError:
+        return None
+
 
 def _find_image_for_view(info_path: Path, base: str, view_index: int) -> Path:
     """
@@ -251,99 +266,134 @@ def extract_track_info(info_path: str) -> str:
 
 
 
-def generate_qa_pairs(info_path: str, view_index: int, img_width: int = 150, img_height: int = 100) -> list[dict]:
+# --------------------------------------------------------------------
+def generate_qa_pairs(
+    info_path: str,
+    view_index: int,
+    img_width: int = 150,
+    img_height: int = 100,
+) -> list[dict]:
     """
-    Generate question-answer pairs for a given view.
+    Build the 5 families of QA pairs for a single `*_info.json` frame.
 
-    Args:
-        info_path: Path to the info.json file
-        view_index: Index of the view to analyze
-        img_width: Width of the image (default: 100)
-        img_height: Height of the image (default: 150)
+    Every dictionary now contains **image_file** so the finetuning
+    pipeline can locate the picture later:
 
-    Returns:
-        List of dictionaries, each containing a question and answer
+        {
+            "image_file": "train/00000_03_im.jpg",
+            "question"  : "...",
+            "answer"    : "..."
+        }
+
+    If the frame image is missing, image_file is set to None.
     """
-    # 1. Ego car question
-    # What kart is the ego car?
+    info_path = Path(info_path)
+    rel_image = _relative_image_path(info_path, view_index)
 
-    # 2. Total karts question
-    # How many karts are there in the scenario?
-
-    # 3. Track information questions
-    # What track is this?
-
-    # 4. Relative position questions for each kart
-    # Is {kart_name} to the left or right of the ego car?
-    # Is {kart_name} in front of or behind the ego car?
-
-    # 5. Counting questions
-    # How many karts are to the left of the ego car?
-    # How many karts are to the right of the ego car?
-    # How many karts are in front of the ego car?
-    # How many karts are behind the ego car?
-
-    # raise NotImplementedError("Not implemented")
     qa_pairs: list[dict] = []
 
-    karts = extract_kart_objects(info_path, view_index, img_width, img_height)
-    if not karts:
+    # -----------------------------------------------------------------
+    #  Parse detections & meta data
+    # -----------------------------------------------------------------
+    karts = extract_kart_objects(str(info_path), view_index, img_width, img_height)
+    if not karts:                        # nothing detected ⇒ nothing to ask
         return qa_pairs
 
-    track = extract_track_info(info_path)
+    track = extract_track_info(str(info_path))
 
-    ego      = next(k for k in karts if k["is_center_kart"])
-    others   = [k for k in karts if not k["is_center_kart"]]
+    ego    = next(k for k in karts if k["is_center_kart"])
+    others = [k for k in karts if not k["is_center_kart"]]
 
-    # 1. Ego-kart identity
+    # -----------------------------------------------------------------
+    #  1. Ego‑kart identity
+    # -----------------------------------------------------------------
     qa_pairs.append(
-        dict(question="What kart is the ego car?", answer=ego["kart_name"])
+        dict(
+            image_file=rel_image,
+            question="What kart is the ego car?",
+            answer=ego["kart_name"],
+        )
     )
 
-    # 2. Total count
+    # -----------------------------------------------------------------
+    #  2. Total kart count
+    # -----------------------------------------------------------------
     qa_pairs.append(
-        dict(question="How many karts are there in the scenario?", answer=str(len(karts)))
+        dict(
+            image_file=rel_image,
+            question="How many karts are there in the scenario?",
+            answer=str(len(karts)),
+        )
     )
 
-    # 3. Track name
-    qa_pairs.append(dict(question="What track is this?", answer=track))
+    # -----------------------------------------------------------------
+    #  3. Track
+    # -----------------------------------------------------------------
+    qa_pairs.append(
+        dict(
+            image_file=rel_image,
+            question="What track is this?",
+            answer=track,
+        )
+    )
 
-    # 4. Relative positions
+    # -----------------------------------------------------------------
+    #  4. Relative position questions
+    # -----------------------------------------------------------------
     for k in others:
         lr = "left" if k["is_left"] else "right"
         fb = "front" if k["is_front"] else "back"
 
-        qa_pairs.append(
-            dict(
-                question=f"Is {k['kart_name']} to the left or right of the ego car?",
-                answer=lr,
-            )
-        )
-        qa_pairs.append(
-            dict(
-                question=f"Is {k['kart_name']} in front of or behind the ego car?",
-                answer=fb,
-            )
-        )
-        qa_pairs.append(
-            dict(
-                question=f"Where is {k['kart_name']} relative to the ego car?",
-                answer=f"{fb} and {lr}",
-            )
+        qa_pairs.extend(
+            [
+                dict(
+                    image_file=rel_image,
+                    question=f"Is {k['kart_name']} to the left or right of the ego car?",
+                    answer=lr,
+                ),
+                dict(
+                    image_file=rel_image,
+                    question=f"Is {k['kart_name']} in front of or behind the ego car?",
+                    answer=fb,
+                ),
+                dict(
+                    image_file=rel_image,
+                    question=f"Where is {k['kart_name']} relative to the ego car?",
+                    answer=f"{fb} and {lr}",
+                ),
+            ]
         )
 
-    # 5. Counting by region
-    left_cnt  = sum(k["is_left"]  for k in others)
-    right_cnt = sum(not k["is_left"] for k in others)
+    # -----------------------------------------------------------------
+    #  5. Region counts
+    # -----------------------------------------------------------------
+    left_cnt  = sum(k["is_left"] for k in others)
+    right_cnt = len(others) - left_cnt
     front_cnt = sum(k["is_front"] for k in others)
-    back_cnt  = sum(not k["is_front"] for k in others)
+    back_cnt  = len(others) - front_cnt
 
     qa_pairs.extend(
         [
-            dict(question="How many karts are to the left of the ego car?",  answer=str(left_cnt)),
-            dict(question="How many karts are to the right of the ego car?", answer=str(right_cnt)),
-            dict(question="How many karts are in front of the ego car?",    answer=str(front_cnt)),
-            dict(question="How many karts are behind the ego car?",         answer=str(back_cnt)),
+            dict(
+                image_file=rel_image,
+                question="How many karts are to the left of the ego car?",
+                answer=str(left_cnt),
+            ),
+            dict(
+                image_file=rel_image,
+                question="How many karts are to the right of the ego car?",
+                answer=str(right_cnt),
+            ),
+            dict(
+                image_file=rel_image,
+                question="How many karts are in front of the ego car?",
+                answer=str(front_cnt),
+            ),
+            dict(
+                image_file=rel_image,
+                question="How many karts are behind the ego car?",
+                answer=str(back_cnt),
+            ),
         ]
     )
 
