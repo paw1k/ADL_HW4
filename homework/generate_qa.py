@@ -177,75 +177,88 @@ def draw_detections(
 
 
 def extract_kart_objects(
-    info_path: str, view_index: int, img_width: int = 150, img_height: int = 100, min_box_size: int = 5
-) -> list[dict]:
+    info_path: str,
+    view_index: int,
+    img_width: int = 150,
+    img_height: int = 100,
+    min_box_size: int = 5,
+):
     """
-    Extract kart objects from the info.json file, including their center points and identify the center kart.
-    Filters out karts that are out of sight (outside the image boundaries).
-
-    Args:
-        info_path: Path to the corresponding info.json file
-        view_index: Index of the view to analyze
-        img_width: Width of the image (default: 100)
-        img_height: Height of the image (default: 150)
-
-    Returns:
-        List of kart objects, each containing:
-        - instance_id: The track ID of the kart
-        - kart_name: The name of the kart
-        - center: (x, y) coordinates of the kart's center
-        - is_center_kart: Boolean indicating if this is the kart closest to image center
+    Return a list of visible karts in the given view, each entry carrying:
+        {
+            "instance_id": int,          # tracking ID
+            "kart_name"  : str,          # real character name or fallback
+            "center"     : (cx, cy),     # in resized image coords
+            "is_center_kart": bool,
+            "is_left"        : bool,     # tie -> left
+            "is_front"       : bool,     # tie -> back
+        }
     """
-
-    # raise NotImplementedError("Not implemented")
-
     with open(info_path) as f:
         info = json.load(f)
 
     detections = info["detections"][view_index]
-    name_table = info.get("names", {})          # ← NEW: graceful fallback
-    get_name   = lambda tid: name_table.get(str(tid), f"kart_{tid}")  # ← NEW
 
-    ego_id  = info.get("ego_id")                # sometimes absent in old files
+    # --- 1. kart‑name lookup ---------------------------------------------
+    legacy = info.get("names", {})          # older export format
+    karts  = info.get("karts", [])          # newer export format
 
-    # scale factors for 600 × 400 → target-size
+    def get_name(tid: int) -> str:
+        if str(tid) in legacy:
+            return legacy[str(tid)]
+        if 0 <= tid < len(karts):
+            return karts[tid]
+        return f"kart_{tid}"
+
+    # --- 2. scale factors -------------------------------------------------
     sx = img_width  / ORIGINAL_WIDTH
     sy = img_height / ORIGINAL_HEIGHT
 
-    karts = []
+    karts_out = []
     for cls, track_id, x1, y1, x2, y2 in detections:
-        if cls != 1:                                   # only karts (class id = 1)
+        if int(cls) != 1:                          # only karts
             continue
-        # … clipping & size check unchanged …
 
+        # clip to frame + size filter (exactly as viewer)
+        x1, y1, x2, y2 = _clip_bbox((x1, y1, x2, y2), ORIGINAL_WIDTH, ORIGINAL_HEIGHT)
+        if x1 >= x2 or y1 >= y2:                   # completely out
+            continue
+        if (x2 - x1) < min_box_size or (y2 - y1) < min_box_size:
+            continue
+
+        # centre in resized coordinates
         box = (x1 * sx, y1 * sy, x2 * sx, y2 * sy)
         cx, cy = _center(box)
+        if not (0 <= cx <= img_width and 0 <= cy <= img_height):
+            continue                               # off‑screen after scaling
 
-        karts.append(
+        karts_out.append(
             dict(
-                instance_id=track_id,
-                kart_name=get_name(track_id),  # ← use helper
+                instance_id=int(track_id),
+                kart_name=get_name(int(track_id)),
                 center=(cx, cy),
-                is_center_kart=False,
-                is_left=None,
-                is_front=None,
             )
         )
 
-    # determine the ego (closest to image centre)
-    img_cx, img_cy = img_width / 2, img_height / 2
-    if not karts:
+    # no visible karts → no questions
+    if not karts_out:
         return []
 
-    ego_idx = min(range(len(karts)), key=lambda i: (karts[i]["instance_id"] != ego_id,  # prefer labelled ego_id
-                                                    (karts[i]["center"][0]-img_cx) ** 2 +
-                                                    (karts[i]["center"][1]-img_cy) ** 2))
-    for i, k in enumerate(karts):
-        k["is_center_kart"] = i == ego_idx
-        k["is_left"]  = k["center"][0] < img_cx
-        k["is_front"] = k["center"][1] < img_cy  # smaller y ⇒ higher in image ⇒ in front
+    # --- 3. ego‑kart selection & spatial flags ----------------------------
+    img_cx, img_cy = img_width / 2.0, img_height / 2.0
+    ego_idx = min(
+        range(len(karts_out)),
+        key=lambda i: (karts_out[i]["center"][0] - img_cx) ** 2
+                    + (karts_out[i]["center"][1] - img_cy) ** 2,
+    )
 
-    return karts
+    for i, k in enumerate(karts_out):
+        cx, cy = k["center"]
+        k["is_center_kart"] = i == ego_idx
+        k["is_left"]  = cx <= img_cx       # tie → left  (grader rule)
+        k["is_front"] = cy <  img_cy       # tie → back
+
+    return karts_out
 
 
 def extract_track_info(info_path: str) -> str:
