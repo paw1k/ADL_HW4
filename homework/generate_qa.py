@@ -309,7 +309,7 @@ def generate_qa_pairs(
     # -----------------------------------------------------------------
     #  1. Ego‑kart identity
     # -----------------------------------------------------------------
-    answer = str(answer).lower()
+
     qa_pairs.append(
         dict(
             image_file=rel_image,
@@ -321,7 +321,7 @@ def generate_qa_pairs(
     # -----------------------------------------------------------------
     #  2. Total kart count
     # -----------------------------------------------------------------
-    answer = str(answer).lower()
+
     qa_pairs.append(
         dict(
             image_file=rel_image,
@@ -333,7 +333,7 @@ def generate_qa_pairs(
     # -----------------------------------------------------------------
     #  3. Track
     # -----------------------------------------------------------------
-    answer = str(answer).lower()
+
     qa_pairs.append(
         dict(
             image_file=rel_image,
