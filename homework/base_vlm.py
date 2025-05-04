@@ -19,89 +19,143 @@ class _TinyDummyNet(nn.Module):
     A single‑parameter network so the grader’s
     model‑size check (<300 M parameters) succeeds.
     """
+        return question
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.zeros(1))
-
-    def forward(self, *args, **kwargs):  # noqa: D401
-        return self.weight
-
-
-class BaseVLM:
-    """
-    Minimal VLM that *looks up* the exact answer for every question
-    using the JSON files that ship with the assignment.
-    This easily reaches 100 % accuracy on `valid_grader`.
-    """
-
-    def __init__(self) -> None:
-        # Tiny placeholder so tests can still call `llm.model.eval()`
-        self.model: nn.Module = _TinyDummyNet().to(DEVICE)
-        self.device = DEVICE
-
-    # --------------------------------------------------------------------- #
-    # Internal helpers                                                      #
-    # --------------------------------------------------------------------- #
-
-    @staticmethod
-    @lru_cache(maxsize=1)
-    def _build_lookup() -> dict[tuple[str, str], str]:
+    def generate(self, image_path: str, question: str) -> str:
         """
-        Scan every `balanced_qa_pairs.json` we can find and build a mapping
+        Generate a response to a question about an image.
 
-            (relative_image_path, lower‑cased question) -> answer
+        Args:
+            image_path: Path to the image file
+            question: Question about the image
+
+        Returns:
+            Generated text response
         """
-        root = Path(__file__).parent / "data"
-        lookup: dict[tuple[str, str], str] = {}
+        return self.batched_generate([image_path], [question])[0]
 
-        for qa_file in root.glob("*/*_qa_pairs.json"):
-            with qa_file.open() as fh:
-                for item in json.load(fh):
-                    rel_path = (
-                        Path(item["image_file"])
-                        if "/" in item["image_file"]
-                        else qa_file.parent.name / item["image_file"]
-                    )
-                    key = (str(rel_path).lower(), item["question"].strip().lower())
-                    lookup[key] = item["answer"].strip()
-
-        if not lookup:
-            raise RuntimeError(
-                "No QA pairs found – check that the data folder is packaged."
-            )
-        return lookup
-
-    # --------------------------------------------------------------------- #
-    # Public API expected by `data.benchmark`                               #
-    # --------------------------------------------------------------------- #
-
-    def answer(self, image_paths: List[str], questions: List[str]) -> List[str]:
+    def batched_generate(
+        self,
+        image_paths: list[str],
+        questions: list[str],
+        num_return_sequences: int | None = None,
+        temperature: float = 0,
+    ) -> list[str] | list[list[str]]:
         """
-        Vectorised answer interface used by the benchmark.
+        Batched version of generate method.
 
-        We normalise the inputs and pull the ground‑truth answer from the
-        lookup.  If an item is missing (should never happen) we return the
-        string ``'unknown'`` to keep the grader running.
+        Args:
+            image_paths: List of paths to image files
+            questions: List of questions about the images
+            num_return_sequences: Number of sequences to return per input
+            temperature: Temperature for sampling
+
+        Returns:
+            List of generated text responses
         """
-        lookup = self._build_lookup()
-        answers: list[str] = []
+        # Load images
+        images = [load_image(img_path) for img_path in image_paths]
 
-        for img_path, q in zip(image_paths, questions):
-            rel = os.path.join(*Path(img_path).parts[-2:]).lower()  # e.g. valid/00095_03_im.jpg
-            key = (rel, q.strip().lower())
-            answers.append(lookup.get(key, "unknown"))
+        # Create input messages with proper image tokens
+        messages = []
+        for q in questions:
+            # Create a message with an image token placeholder
+            message = {
+                "role": "user",
+                "content": [
+                    {"type": "image"},  # Correct type to insert image token
+                    {"type": "text", "text": self.format_prompt(q)},
+                ],
+            }
+            messages.append([message])
 
-        return answers
+        # Prepare inputs
+        prompts = [self.processor.apply_chat_template(message, add_generation_prompt=True) for message in messages]
+        inputs = self.processor(
+            text=prompts, images=images, return_tensors="pt", padding=True, truncation=True, padding_side="left"
+        )
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        # Set generation parameters
+        generate_params = {
+            "max_new_tokens": 32,
+            "do_sample": temperature > 0,
+            "eos_token_id": self.processor.tokenizer.eos_token_id,
+        }
+
+        if temperature > 0:
+            generate_params["temperature"] = temperature
+
+        if num_return_sequences is not None:
+            generate_params["num_return_sequences"] = num_return_sequences
+
+        # Generate outputs
+        with torch.no_grad():
+            outputs = self.model.generate(**inputs, **generate_params)
+
+        # Decode outputs
+        generated_texts = self.processor.batch_decode(
+            outputs,
+            skip_special_tokens=True,
+        )
+
+        # Extract only the assistant's answer
+        cleaned_texts = []
+        for text in generated_texts:
+            # Find the last occurrence of "Assistant:" and take everything after
+            if "Assistant:" in text:
+                cleaned_texts.append(text.split("Assistant:")[-1].strip())
+            else:
+                cleaned_texts.append(text.strip())
+
+        # Handle multiple return sequences
+        if num_return_sequences is not None:
+            return [
+                cleaned_texts[i : i + num_return_sequences] for i in range(0, len(cleaned_texts), num_return_sequences)
+            ]
+
+        return cleaned_texts
+
+    def answer(self, image_paths, questions) -> list[str]:
+        """
+        Answer multiple questions about an image.
+
+        Args:
+            *image_paths: Paths to the image files
+            *questions: Questions about the image
+
+        Returns:
+            List of answers
+        """
+        return self.batched_generate(image_paths, questions)
 
 
-# Convenience loader so the grader can call `load_vlm()`
-def load_vlm() -> BaseVLM:  # noqa: D401
-    """
-    The grader expects a function called `load_vlm` that returns
-    an object with attributes
+def test_model():
+    # Test the BaseVLM with a sample image and question
+    model = BaseVLM()
 
-      • .model  – a `torch.nn.Module`
-      • .answer – a callable as shown above
-    """
-    return BaseVLM()
+    # Use a sample image from the internet
+    current_dir = Path(__file__).parent
+    image_path_1 = str((current_dir / "../data/train/00000_00_im.jpg").resolve())
+    image_path_2 = str((current_dir / "../data/train/00000_01_im.jpg").resolve())
+
+    # Test multiple questions
+    questions = ["What is in the center of this image?", "What track is this?"]
+    answers = model.answer([image_path_1, image_path_2], questions)
+    print("\nTesting multiple questions:")
+    for q, a in zip(questions, answers):
+        print(f"Q: {q}")
+        print(f"A: {a}")
+
+
+def test_benchmark():
+    model = BaseVLM()
+    dataset = VQADataset("valid")
+    result = benchmark(model, dataset, 8)
+    print(result.accuracy)
+
+
+if __name__ == "__main__":
+    from fire import Fire
+
+    Fire({"test": test_model, "benchmark": test_benchmark})
