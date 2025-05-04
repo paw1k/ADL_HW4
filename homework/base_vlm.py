@@ -1,8 +1,3 @@
-# homework/base_vlm.py
-from __future__ import annotations
-
-import json
-import os
 from pathlib import Path
 
 import torch
@@ -14,11 +9,24 @@ from .data import VQADataset, benchmark
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
 
-class _TinyDummyNet(nn.Module):
-    """
-    A single‑parameter network so the grader’s
-    model‑size check (<300 M parameters) succeeds.
-    """
+class BaseVLM:
+    def __init__(self, checkpoint="HuggingFaceTB/SmolVLM-256M-Instruct"):
+        self.processor = AutoProcessor.from_pretrained(checkpoint)
+
+        # important to set this to False, otherwise too many image tokens
+        self.processor.image_processor.do_image_splitting = False
+
+        self.model = AutoModelForVision2Seq.from_pretrained(
+            checkpoint,
+            torch_dtype=torch.bfloat16,
+            _attn_implementation="eager",
+        ).to(DEVICE)
+        self.device = DEVICE
+
+    def format_prompt(self, question: str) -> str:
+        """
+        Format the question into a prompt for the VLM.
+        """
         return question
 
     def generate(self, image_path: str, question: str) -> str:
