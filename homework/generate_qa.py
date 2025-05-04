@@ -43,19 +43,14 @@ def _center(box: Tuple[float, float, float, float]) -> Tuple[float, float]:
 
 
 # -------------------------------------------------
-def _relative_image_path(info_path: Path, view_index: int) -> str | None:
+def _relative_image_path(info_path: Path, view_idx: int) -> str | None:
     """
-    Return the frame filename *relative to the data dir* so
-    VQADataset can join it with its own data_dir later on.
-    If the frame isn't found, return None.
+    Return the (dataset‑relative) jpg that corresponds to this *_info.json* + view.
+    If the jpg is missing on disk, return *None* so we can skip the frame cleanly.
     """
-    base_name = info_path.stem.replace("_info", "")
-    try:
-        img_path = _find_image_for_view(info_path, base_name, view_index)
-        # example:  data/train/00000_00_im.jpg  ->  train/00000_00_im.jpg
-        return str(img_path.relative_to(info_path.parents[1]))
-    except FileNotFoundError:
-        return None
+    stem = info_path.stem.replace("_info", "")
+    jpg   = info_path.parent / f"{stem}_{view_idx:02d}_im.jpg"
+    return str(jpg.relative_to(info_path.parents[1])) if jpg.exists() else None
 
 
 def _find_image_for_view(info_path: Path, base: str, view_index: int) -> Path:
@@ -294,6 +289,9 @@ def generate_qa_pairs(
     info_path = Path(info_path)
     rel_image = _relative_image_path(info_path, view_index)
 
+    if rel_image is None:
+        return []
+
     qa_pairs: list[dict] = []
 
     # -----------------------------------------------------------------
@@ -311,6 +309,7 @@ def generate_qa_pairs(
     # -----------------------------------------------------------------
     #  1. Ego‑kart identity
     # -----------------------------------------------------------------
+    answer = str(answer).lower()
     qa_pairs.append(
         dict(
             image_file=rel_image,
@@ -322,6 +321,7 @@ def generate_qa_pairs(
     # -----------------------------------------------------------------
     #  2. Total kart count
     # -----------------------------------------------------------------
+    answer = str(answer).lower()
     qa_pairs.append(
         dict(
             image_file=rel_image,
@@ -333,6 +333,7 @@ def generate_qa_pairs(
     # -----------------------------------------------------------------
     #  3. Track
     # -----------------------------------------------------------------
+    answer = str(answer).lower()
     qa_pairs.append(
         dict(
             image_file=rel_image,
