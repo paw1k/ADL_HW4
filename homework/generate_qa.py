@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Tuple
 
 import fire
 import matplotlib.pyplot as plt
@@ -35,9 +36,10 @@ def _clip_bbox(box, w, h):
     x1, y1, x2, y2 = box
     return max(0, x1), max(0, y1), min(w, x2), min(h, y2)
 
-def _center(box):
+def _center(box: Tuple[float, float, float, float]) -> Tuple[float, float]:
+    """Return (cx, cy) for a (x1, y1, x2, y2) box."""
     x1, y1, x2, y2 = box
-    return (x1 + x2) / 2, (y1 + y2) / 2
+    return (x1 + x2) / 2.0, (y1 + y2) / 2.0
 
 
 # -------------------------------------------------
@@ -182,101 +184,90 @@ def extract_kart_objects(
     img_width: int = 150,
     img_height: int = 100,
     min_box_size: int = 5,
-):
+) -> list[dict]:
     """
-    Return a list of visible karts in the given view, each entry carrying:
+    Parse *info.json* and return a normalised list describing every visible kart.
+
+    Each element::
         {
-            "instance_id": int,          # tracking ID
-            "kart_name"  : str,          # real character name or fallback
-            "center"     : (cx, cy),     # in resized image coords
-            "is_center_kart": bool,
-            "is_left"        : bool,     # tie -> left
-            "is_front"       : bool,     # tie -> back
+          "instance_id":  <track‑id>,
+          "kart_name":    <string>,           # if names table present
+          "center":       (cx, cy),           # after scaling to (img_width×img_height)
+          "is_center_kart": bool,             # ego (closest to img centre or labelled)
+          "is_left":      bool,               # relative to img centre
+          "is_front":     bool,               # y smaller  ⇒ in front
         }
     """
-    with open(info_path) as f:
+    with open(info_path, "r") as f:
         info = json.load(f)
 
     detections = info["detections"][view_index]
+    names      = {str(k): v for k, v in info.get("names", {}).items()}
+    ego_id     = info.get("ego_id")            
 
-    # --- 1. kart‑name lookup ---------------------------------------------
-    legacy = info.get("names", {})          # older export format
-    karts  = info.get("karts", [])          # newer export format
-
-    def get_name(tid: int) -> str:
-        if str(tid) in legacy:
-            return legacy[str(tid)]
-        if 0 <= tid < len(karts):
-            return karts[tid]
-        return f"kart_{tid}"
-
-    # --- 2. scale factors -------------------------------------------------
     sx = img_width  / ORIGINAL_WIDTH
     sy = img_height / ORIGINAL_HEIGHT
 
-    karts_out = []
+    karts = []
     for cls, track_id, x1, y1, x2, y2 in detections:
-        if int(cls) != 1:                          # only karts
+        if int(cls) != 1:
+            continue                  
+        box_scaled = (x1 * sx, y1 * sy, x2 * sx, y2 * sy)
+        x1s, y1s, x2s, y2s = box_scaled
+        w, h = x2s - x1s, y2s - y1s
+        if w < min_box_size or h < min_box_size:
+            continue
+        if x2s < 0 or x1s > img_width or y2s < 0 or y1s > img_height:
             continue
 
-        # clip to frame + size filter (exactly as viewer)
-        x1, y1, x2, y2 = _clip_bbox((x1, y1, x2, y2), ORIGINAL_WIDTH, ORIGINAL_HEIGHT)
-        if x1 >= x2 or y1 >= y2:                   # completely out
-            continue
-        if (x2 - x1) < min_box_size or (y2 - y1) < min_box_size:
-            continue
-
-        # centre in resized coordinates
-        box = (x1 * sx, y1 * sy, x2 * sx, y2 * sy)
-        cx, cy = _center(box)
-        if not (0 <= cx <= img_width and 0 <= cy <= img_height):
-            continue                               # off‑screen after scaling
-
-        karts_out.append(
+        cx, cy = _center(box_scaled)
+        karts.append(
             dict(
                 instance_id=int(track_id),
-                kart_name=get_name(int(track_id)),
+                kart_name=names.get(str(track_id), f"kart_{track_id}"),
                 center=(cx, cy),
+                is_center_kart=False,      
+                is_left=None,
+                is_front=None,
             )
         )
 
-    # no visible karts → no questions
-    if not karts_out:
+    if not karts:
         return []
 
-    # --- 3. ego‑kart selection & spatial flags ----------------------------
     img_cx, img_cy = img_width / 2.0, img_height / 2.0
-    ego_idx = min(
-        range(len(karts_out)),
-        key=lambda i: (karts_out[i]["center"][0] - img_cx) ** 2
-                    + (karts_out[i]["center"][1] - img_cy) ** 2,
-    )
 
-    for i, k in enumerate(karts_out):
-        cx, cy = k["center"]
+    def _dist_sq(k):
+        dx, dy = k["center"][0] - img_cx, k["center"][1] - img_cy
+        return dx * dx + dy * dy
+
+    ego_idx = 0
+    if ego_id is not None:
+        for i, k in enumerate(karts):
+            if k["instance_id"] == ego_id:
+                ego_idx = i
+                break
+        else:
+            ego_idx = min(range(len(karts)), key=lambda i: _dist_sq(karts[i]))
+    else:
+        ego_idx = min(range(len(karts)), key=lambda i: _dist_sq(karts[i]))
+
+    for i, k in enumerate(karts):
         k["is_center_kart"] = i == ego_idx
-        k["is_left"]  = cx <= img_cx       # tie → left  (grader rule)
-        k["is_front"] = cy <  img_cy       # tie → back
+        k["is_left"]  = k["center"][0] < img_cx
+        k["is_front"] = k["center"][1] < img_cy  
 
-    return karts_out
+    return karts
 
 
 def extract_track_info(info_path: str) -> str:
     """
-    Extract track information from the info.json file.
-
-    Args:
-        info_path: Path to the info.json file
-
-    Returns:
-        Track name as a string
+    Returns the lowercase track name recorded in *info.json*.
+    Falls back to `"unknown"` if the key is missing.
     """
-
-    # raise NotImplementedError("Not implemented")
-    with open(info_path) as f:
+    with open(info_path, "r") as f:
         info = json.load(f)
-    return info["track"]
-
+    return str(info.get("track", "unknown")).lower()
 
 
 # --------------------------------------------------------------------
